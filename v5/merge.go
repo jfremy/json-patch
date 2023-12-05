@@ -7,6 +7,20 @@ import (
 	"reflect"
 )
 
+type jsonImpl struct {
+	Marshal       func(interface{}) ([]byte, error)
+	MarshalIndent func(interface{}, string, string) ([]byte, error)
+	Unmarshal     func([]byte, interface{}) error
+	Compact       func(*bytes.Buffer, []byte) error
+}
+
+var def = jsonImpl{
+	Marshal:       json.Marshal,
+	MarshalIndent: json.MarshalIndent,
+	Unmarshal:     json.Unmarshal,
+	Compact:       json.Compact,
+}
+
 func merge(cur, patch *lazyNode, mergeMerge bool) *lazyNode {
 	curDoc, err := cur.intoDoc()
 
@@ -108,22 +122,30 @@ var errBadMergeTypes = fmt.Errorf("Mismatched JSON Documents")
 // applying this resulting merged merge patch to a document yields the same
 // as merging each merge patch to the document in succession.
 func MergeMergePatches(patch1Data, patch2Data []byte) ([]byte, error) {
-	return doMergePatch(patch1Data, patch2Data, true)
+	return def.MergeMergePatches(patch1Data, patch2Data)
+}
+
+func (m jsonImpl) MergeMergePatches(patch1Data, patch2Data []byte) ([]byte, error) {
+	return m.doMergePatch(patch1Data, patch2Data, true)
 }
 
 // MergePatch merges the patchData into the docData.
 func MergePatch(docData, patchData []byte) ([]byte, error) {
-	return doMergePatch(docData, patchData, false)
+	return def.MergePatch(docData, patchData)
 }
 
-func doMergePatch(docData, patchData []byte, mergeMerge bool) ([]byte, error) {
+func (m jsonImpl) MergePatch(docData, patchData []byte) ([]byte, error) {
+	return def.doMergePatch(docData, patchData, false)
+}
+
+func (m jsonImpl) doMergePatch(docData, patchData []byte, mergeMerge bool) ([]byte, error) {
 	doc := &partialDoc{}
 
-	docErr := json.Unmarshal(docData, doc)
+	docErr := m.Unmarshal(docData, doc)
 
 	patch := &partialDoc{}
 
-	patchErr := json.Unmarshal(patchData, patch)
+	patchErr := m.Unmarshal(patchData, patch)
 
 	if isSyntaxError(docErr) {
 		return nil, errBadJSONDoc
@@ -151,7 +173,7 @@ func doMergePatch(docData, patchData []byte, mergeMerge bool) ([]byte, error) {
 			}
 		} else {
 			patchAry := &partialArray{}
-			patchErr = json.Unmarshal(patchData, patchAry)
+			patchErr = m.Unmarshal(patchData, patchAry)
 
 			if patchErr != nil {
 				return nil, errBadJSONPatch
@@ -159,7 +181,7 @@ func doMergePatch(docData, patchData []byte, mergeMerge bool) ([]byte, error) {
 
 			pruneAryNulls(patchAry)
 
-			out, patchErr := json.Marshal(patchAry)
+			out, patchErr := m.Marshal(patchAry)
 
 			if patchErr != nil {
 				return nil, errBadJSONPatch
@@ -171,7 +193,7 @@ func doMergePatch(docData, patchData []byte, mergeMerge bool) ([]byte, error) {
 		mergeDocs(doc, patch, mergeMerge)
 	}
 
-	return json.Marshal(doc)
+	return m.Marshal(doc)
 }
 
 func isSyntaxError(err error) bool {
@@ -204,17 +226,21 @@ func resemblesJSONArray(input []byte) bool {
 // JSON documents.
 // The merge patch returned follows the specification defined at http://tools.ietf.org/html/draft-ietf-appsawg-json-merge-patch-07
 func CreateMergePatch(originalJSON, modifiedJSON []byte) ([]byte, error) {
+	return def.CreateMergePatch(originalJSON, modifiedJSON)
+}
+
+func (m jsonImpl) CreateMergePatch(originalJSON, modifiedJSON []byte) ([]byte, error) {
 	originalResemblesArray := resemblesJSONArray(originalJSON)
 	modifiedResemblesArray := resemblesJSONArray(modifiedJSON)
 
 	// Do both byte-slices seem like JSON arrays?
 	if originalResemblesArray && modifiedResemblesArray {
-		return createArrayMergePatch(originalJSON, modifiedJSON)
+		return m.createArrayMergePatch(originalJSON, modifiedJSON)
 	}
 
 	// Are both byte-slices are not arrays? Then they are likely JSON objects...
 	if !originalResemblesArray && !modifiedResemblesArray {
-		return createObjectMergePatch(originalJSON, modifiedJSON)
+		return m.createObjectMergePatch(originalJSON, modifiedJSON)
 	}
 
 	// None of the above? Then return an error because of mismatched types.
@@ -223,16 +249,16 @@ func CreateMergePatch(originalJSON, modifiedJSON []byte) ([]byte, error) {
 
 // createObjectMergePatch will return a merge-patch document capable of
 // converting the original document to the modified document.
-func createObjectMergePatch(originalJSON, modifiedJSON []byte) ([]byte, error) {
+func (m jsonImpl) createObjectMergePatch(originalJSON, modifiedJSON []byte) ([]byte, error) {
 	originalDoc := map[string]interface{}{}
 	modifiedDoc := map[string]interface{}{}
 
-	err := json.Unmarshal(originalJSON, &originalDoc)
+	err := m.Unmarshal(originalJSON, &originalDoc)
 	if err != nil {
 		return nil, errBadJSONDoc
 	}
 
-	err = json.Unmarshal(modifiedJSON, &modifiedDoc)
+	err = m.Unmarshal(modifiedJSON, &modifiedDoc)
 	if err != nil {
 		return nil, errBadJSONDoc
 	}
@@ -242,23 +268,23 @@ func createObjectMergePatch(originalJSON, modifiedJSON []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	return json.Marshal(dest)
+	return m.Marshal(dest)
 }
 
 // createArrayMergePatch will return an array of merge-patch documents capable
 // of converting the original document to the modified document for each
 // pair of JSON documents provided in the arrays.
 // Arrays of mismatched sizes will result in an error.
-func createArrayMergePatch(originalJSON, modifiedJSON []byte) ([]byte, error) {
+func (m jsonImpl) createArrayMergePatch(originalJSON, modifiedJSON []byte) ([]byte, error) {
 	originalDocs := []json.RawMessage{}
 	modifiedDocs := []json.RawMessage{}
 
-	err := json.Unmarshal(originalJSON, &originalDocs)
+	err := m.Unmarshal(originalJSON, &originalDocs)
 	if err != nil {
 		return nil, errBadJSONDoc
 	}
 
-	err = json.Unmarshal(modifiedJSON, &modifiedDocs)
+	err = m.Unmarshal(modifiedJSON, &modifiedDocs)
 	if err != nil {
 		return nil, errBadJSONDoc
 	}
@@ -273,7 +299,7 @@ func createArrayMergePatch(originalJSON, modifiedJSON []byte) ([]byte, error) {
 		original := originalDocs[i]
 		modified := modifiedDocs[i]
 
-		patch, err := createObjectMergePatch(original, modified)
+		patch, err := m.createObjectMergePatch(original, modified)
 		if err != nil {
 			return nil, err
 		}
@@ -281,7 +307,7 @@ func createArrayMergePatch(originalJSON, modifiedJSON []byte) ([]byte, error) {
 		result = append(result, json.RawMessage(patch))
 	}
 
-	return json.Marshal(result)
+	return m.Marshal(result)
 }
 
 // Returns true if the array matches (must be json types).
@@ -311,6 +337,11 @@ func matchesValue(av, bv interface{}) bool {
 	switch at := av.(type) {
 	case string:
 		bt := bv.(string)
+		if bt == at {
+			return true
+		}
+	case int64:
+		bt := bv.(int64)
 		if bt == at {
 			return true
 		}
@@ -377,7 +408,7 @@ func getDiff(a, b map[string]interface{}) (map[string]interface{}, error) {
 			if len(dst) > 0 {
 				into[key] = dst
 			}
-		case string, float64, bool:
+		case string, float64, int64, bool:
 			if !matchesValue(av, bv) {
 				into[key] = bv
 			}
